@@ -54,7 +54,7 @@ export default function App(){
   function onCellLeave(){setHover(null)}
   return (
     <div className="p-4 space-y-4">
-      <h1 className="text-2xl font-semibold"> Дэшборд доступности жилья — Sydney (SA2, синтетика)</h1>
+      <h1 className="text-2xl font-semibold"> Дэшборд доступности жилья - Sydney (SA2, синтетика)</h1>
       <p className="text-sm opacity-80">Выберите режим сверху. <b>Аренда</b> — ищем доступную аренду; <b>Покупка</b> — считаем бюджет и платежи.</p>
       <div className="flex items-center gap-3 p-2 rounded-xl bg-white shadow w-max">
         <button className={`px-3 py-1 rounded-lg ${segment==='tenants'?'bg-gray-900 text-white':'bg-gray-100'}`} onClick={()=>setSegment('tenants')}>Аренда</button>
