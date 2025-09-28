@@ -1,219 +1,332 @@
-# app.py  — Streamlit wrapper для React-приложения (всё в одном файле)
+# app.py
+import math
+import numpy as np
+import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import date
 
-st.set_page_config(page_title="Housing Dashboard — Sydney (SA2, synthetic)", layout="wide")
+st.set_page_config(page_title="Housing Affordability — Sydney (Synthetic SA2)", layout="wide")
 
-components.html(r"""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<script src="https://cdn.tailwindcss.com"></script>
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
-<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<style>
-  html,body,#root{height:100%;background:#f5f5f5;margin:0}
-</style>
-</head>
-<body>
-<div id="root"></div>
+# ---------- utils ----------
+def mulberry32(seed: int):
+    a = seed & 0xFFFFFFFF
+    def rnd():
+        nonlocal a
+        a = (a + 0x6D2B79F5) & 0xFFFFFFFF
+        t = (a ^ (a >> 15)) * (1 | a)
+        t = (t + ((t ^ (t >> 7)) * (61 | t))) ^ t
+        return ((t ^ (t >> 14)) & 0xFFFFFFFF) / 4294967296
+    return rnd
 
-<!-- Поймаем JS-ошибки и покажем их внизу страницы -->
-<script>
-  window.onerror=function(m,src,ln,col,err){
-    var d=document.createElement('pre');
-    d.style.cssText='position:fixed;left:8px;right:8px;bottom:8px;z-index:9999;background:#fee;border:1px solid #f99;color:#900;padding:8px;white-space:pre-wrap;font:12px/1.4 ui-monospace';
-    d.textContent='JS error: '+m+' at '+(src||'')+':'+ln+':'+col;
-    document.body.appendChild(d);
-  }
-</script>
+def range_months(start: date, end: date):
+    months = []
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        months.append(date(y, m, 1))
+        m += 1
+        if m == 13:
+            m = 1; y += 1
+    return months
 
-<!-- Само приложение на React + Babel (UMD) -->
-<script type="text/babel" data-presets="env,react">
-const {useMemo,useState,useEffect}=React;
-const {Line,XAxis,YAxis,Tooltip,Legend,ResponsiveContainer,CartesianGrid,AreaChart,Area,ReferenceArea}=Recharts;
+def money(x): 
+    try: x = float(x)
+    except: x = 0.0
+    return f"A$ {int(round(x)):,.0f}"
 
-function mulberry32(a){return function(){a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^a>>>15,1|a);t=(t+Math.imul(t^t>>>7,61|t))^t;return((t^t>>>14)>>>0)/4294967296;}}
-function rangeMonths(s,e){const r=[],d=new Date(s.getFullYear(),s.getMonth(),1);while(d<=e){r.push(new Date(d));d.setMonth(d.getMonth()+1)}return r}
-function fmtMoney(v){const x=Number.isFinite(+v)?+v:0;return`A$ ${x.toLocaleString(undefined,{maximumFractionDigits:0})}`}
-function withAlpha(rgb,a){const m=rgb.match(/\d+/g)||[0,0,0];return`rgba(${m[0]},${m[1]},${m[2]},${a})`}
-function colorGYR(v,min,max,invert=false){if(!Number.isFinite(v))return"#ccc";const t=(v-min)/(max-min+1e-9),u=Math.max(0,Math.min(1,t));const x=invert?1-u:u;let r,g,b;if(x<.5){const k=x/.5;r=Math.round(255*k);g=Math.round(128+(215-128)*k);b=0}else{const k=(x-.5)/.5;r=Math.round(255+(220-255)*k);g=Math.round(215+(20-215)*k);b=Math.round(60*k)}return`rgb(${r},${g},${b})`}
-function fmtMetric(m,v){if(!Number.isFinite(v))return"—";switch(m){case"RTI":return(v*100).toFixed(1)+"%";case"PTI":return v.toFixed(1);case"Median Rent":return fmtMoney(Math.round(v))+"/нед";case"Median Rent (month)":return fmtMoney(Math.round(v))+"/мес";case"Median Price":return fmtMoney(Math.round(v));case"Median Income":return fmtMoney(Math.round(v))+"/год";case"Payment Cap Gap":{const p=(v*100).toFixed(1)+"%";return(v<=0?"✅ ":"❌ ")+p}default:return String(v)}}
-function annuityMonthly(L,ra,y){const loan=Math.max(0,+L||0);const m=(+ra||0)/12;const n=Math.max(1,(+y||0)*12);if(loan===0)return 0;if(m===0)return loan/n;return(m*loan)/(1-Math.pow(1+m,-n))}
-function principalFromMonthly(p,ra,y){const m=(+ra||0)/12;const n=Math.max(1,(+y||0)*12);if(m===0)return(+p||0)*n;return(+p||0)*(1-Math.pow(1+m,-n))/m}
-function useSyntheticData(){return useMemo(()=>{const rng=mulberry32(20250926);const sa2=Array.from({length:12},(_,i)=>({code:`SA2_${String(i+1).padStart(2,"0")}`}));const nCols=4;sa2.forEach((s,i)=>{s.r=Math.floor(i/nCols);s.c=i%nCols});const months=rangeMonths(new Date(2015,0,1),new Date(2025,8,1));const rows=[];sa2.forEach(s=>{let price=650000+rng()*950000;let rent=420+rng()*480;let income=70000+rng()*55000;const gp=.0018+(rng()-.5)*.0008,gr=.0012+(rng()-.5)*.0006,gi=.0009+(rng()-.5)*.0005;months.forEach((dt,t)=>{const seas=1+.02*Math.sin(2*Math.PI*(t%12)/12);price*=1+gp+Math.max(-.003,Math.min(.003,(rng()-.5)*.002));rent*=1+gr+Math.max(-.002,Math.min(.002,(rng()-.5)*.0016));income*=1+gi+Math.max(-.0015,Math.min(.0015,(rng()-.5)*.0012));const P=Math.max(250000,price*seas+(rng()-.5)*24000);const Rw=Math.max(250,rent*seas+(rng()-.5)*16);const I=Math.max(40000,income*(.995+(rng()-.5)*.004));rows.push({date:dt.toISOString().slice(0,7),SA2_CODE:s.code,MedianPrice:P,MedianRent_week:Rw,MedianIncome_annual:I})})});return{sa2,months,rows}},[])}
-const RENT_BEDROOM_COEFFS={1:1.00,2:1.35,3:1.75};const PRICE_BEDROOM_COEFFS={1:.85,2:1.00,3:1.25};
+def color_scale_gyr(invert=False):
+    # green -> yellow -> red
+    scale = [
+        [0.0, "rgb(0,128,0)"],
+        [0.5, "rgb(255,215,0)"],
+        [1.0, "rgb(220,20,60)"]
+    ]
+    return list(reversed(scale)) if invert else scale
 
-function App(){
-  const{sa2,months,rows}=useSyntheticData();
-  const[segment,setSegment]=useState("buyers"),[metric,setMetric]=useState("RTI"),[bedrooms,setBedrooms]=useState(2),[preset,setPreset]=useState("5y");
-  const[savings,setSavings]=useState(40000),[incomeUser,setIncomeUser]=useState(95000),[depositPct,setDepositPct]=useState(20),[interest,setInterest]=useState(6.0),[mortgageYears,setMortgageYears]=useState(25);
-  const fixedMortgageYears=25;const[selected,setSelected]=useState(sa2.slice(0,3).map(x=>x.code));const[focusSA2,setFocusSA2]=useState(sa2[0].code);
-  const[useRealGeo,setUseRealGeo]=useState(true),[geojson,setGeojson]=useState(null),[geoStatus,setGeoStatus]=useState('idle');
-  const[maxMonthly,setMaxMonthly]=useState(2500),[targetMTI,setTargetMTI]=useState(30);const[hover,setHover]=useState(null);
+def annuity_monthly(L, r_annual, years):
+    L = max(0.0, float(L))
+    m = float(r_annual)/12.0
+    n = max(1, int(round(years*12)))
+    if L == 0: return 0.0
+    if m == 0: return L / n
+    return (m*L) / (1 - (1+m)**(-n))
 
-  useEffect(()=>{if(!useRealGeo){setGeojson(null);setGeoStatus('idle');return}let aborted=false;setGeoStatus('loading');(async()=>{const urls=['https://raw.githubusercontent.com/centreborelli/geo-aus/master/ABS/2016/SA2/sa2_2016_sydney_simplified.geojson','https://raw.githubusercontent.com/tonywr71/GeoJson-Data/master/australia/sa2/sydney_sa2.json'];for(const url of urls){try{const r=await fetch(url,{mode:'cors'});if(!r.ok)throw new Error('HTTP '+r.status);const gj=await r.json();if(!aborted&&gj&&gj.features&&gj.features.length){setGeojson(gj);setGeoStatus('ready');return}}catch(e){}}if(!aborted){setGeojson(null);setGeoStatus('error')}})();return()=>{aborted=true}},[useRealGeo]);
+def principal_from_monthly(payment, r_annual, years):
+    m = float(r_annual)/12.0
+    n = max(1, int(round(years*12)))
+    if m == 0: return float(payment)*n
+    return float(payment) * (1 - (1+m)**(-n)) / m
 
-  const endIndex=months.length-1,lastMonthStr=months[endIndex].toISOString().slice(0,7);
-  const startIndex=useMemo(()=>{if(preset==="Max")return 0;if(preset==="1y")return Math.max(0,endIndex-12);if(preset==="3y")return Math.max(0,endIndex-36);return Math.max(0,endIndex-60)},[preset,endIndex]);
-  const monthSet=new Set(months.slice(startIndex).map(d=>d.toISOString().slice(0,7)));const filtered=rows.filter(r=>monthSet.has(r.date));
+RENT_BEDROOM_COEFFS = {1:1.00, 2:1.35, 3:1.75}
+PRICE_BEDROOM_COEFFS = {1:0.85, 2:1.00, 3:1.25}
 
-  const bySA2Latest=useMemo(()=>{const arr=filtered.filter(r=>r.date===lastMonthStr);const brR=RENT_BEDROOM_COEFFS[bedrooms]||1;const brP=PRICE_BEDROOM_COEFFS[bedrooms]||1;return arr.map(r=>({...r,MedianRent_week_adj:r.MedianRent_week*brR,MedianPrice_adj:r.MedianPrice*brP,PTI:(r.MedianPrice*brP)/r.MedianIncome_annual,RTI:(r.MedianRent_week*brR*52)/r.MedianIncome_annual}))},[filtered,bedrooms,lastMonthStr]);
-  const focusRow=bySA2Latest.find(x=>x.SA2_CODE===focusSA2)||bySA2Latest[0];
+# ---------- synthetic data ----------
+@st.cache_data
+def load_synthetic():
+    rng = mulberry32(20250926)
+    sa2 = [f"SA2_{i:02d}" for i in range(1,13)]
+    months = range_months(date(2015,1,1), date(2025,9,1))
+    rows = []
+    for i, code in enumerate(sa2):
+        price = 650000 + rng()*950000
+        rent  = 420 + rng()*480
+        income= 70000 + rng()*55000
+        gp = 0.0018 + (rng()-0.5)*0.0008
+        gr = 0.0012 + (rng()-0.5)*0.0006
+        gi = 0.0009 + (rng()-0.5)*0.0005
+        for t, dt in enumerate(months):
+            seas = 1 + 0.02*math.sin(2*math.pi*(t%12)/12)
+            price *= 1 + gp + max(-0.003, min(0.003, (rng()-0.5)*0.002))
+            rent  *= 1 + gr + max(-0.002, min(0.002, (rng()-0.5)*0.0016))
+            income*= 1 + gi + max(-0.0015, min(0.0015, (rng()-0.5)*0.0012))
+            P  = max(250000, price*seas + (rng()-0.5)*24000)
+            Rw = max(250,    rent*seas  + (rng()-0.5)*16)
+            I  = max(40000,  income*(0.995+(rng()-0.5)*0.004))
+            rows.append(dict(date=dt.strftime("%Y-%m"), SA2_CODE=code,
+                             MedianPrice=P, MedianRent_week=Rw, MedianIncome_annual=I))
+    df = pd.DataFrame(rows)
+    # grid layout indices for 3x4 map
+    grid = pd.DataFrame({
+        "SA2_CODE": sa2,
+        "row": [0,0,0,0, 1,1,1,1, 2,2,2,2],
+        "col": [0,1,2,3, 0,1,2,3, 0,1,2,3]
+    })
+    return df, grid, months
 
-  const priceAdj=Number(focusRow?.MedianPrice_adj||0),income=Number(incomeUser||0),depositTarget=(Number(depositPct||0)/100)*priceAdj;
-  const loanPrincipal=Math.max(0,priceAdj-depositTarget),monthlyPayment=annuityMonthly(loanPrincipal,Number(interest||0)/100,Math.max(1,Number(mortgageYears||1)));
-  const mti=(monthlyPayment*12)/Math.max(1e-9,income);
-  const LcapMap=principalFromMonthly(Number(maxMonthly||0),Number(interest||0)/100,fixedMortgageYears),LcapUser=principalFromMonthly(Number(maxMonthly||0),Number(interest||0)/100,Math.max(1,Number(mortgageYears||1)));
-  const capGapBySA2=useMemo(()=>bySA2Latest.map(r=>{const P=r.MedianPrice_adj;const L_needed=P*(1-(Number(depositPct||0)/100));const gap=(L_needed-LcapMap)/Math.max(1e-9,P);return{SA2_CODE:r.SA2_CODE,gap,P,L_needed}}),[bySA2Latest,depositPct,LcapMap]);
+df, grid, months = load_synthetic()
+last_month = months[-1].strftime("%Y-%m")
 
-  const S_priceAdj=useMemo(()=>fmtMoney(Math.round(priceAdj)),[priceAdj]),S_depositTarget=useMemo(()=>fmtMoney(Math.round(depositTarget)),[depositTarget]),S_income=useMemo(()=>fmtMoney(Math.round(income)),[income]);
-  const rentAdjWeek=Number(focusRow?.MedianRent_week_adj||0),rentAdjMonth=rentAdjWeek*52/12,rtiUser=(rentAdjWeek*52)/Math.max(1e-9,income);
-  const S_rentAdjWeek=useMemo(()=>fmtMoney(Math.round(rentAdjWeek)),[rentAdjWeek]),S_rentAdjMonth=useMemo(()=>fmtMoney(Math.round(rentAdjMonth)),[rentAdjMonth]);
+# ---------- sidebar ----------
+st.sidebar.title("Настройки")
+segment = st.sidebar.radio("Режим", ["Покупка (buyers)", "Аренда (tenants)"], index=0)
+segment_key = "buyers" if segment.startswith("Покупка") else "tenants"
+metric = st.sidebar.selectbox("Слой карты", ["RTI","PTI","Median Rent","Median Price","Median Income","Payment Cap Gap"], index=0)
+bedrooms = st.sidebar.slider("Спален", 1, 3, 2)
+preset = st.sidebar.selectbox("Период", ["5y","3y","1y","Max"], index=0)
 
-  function higherIsBad(m){return["Median Price","Median Rent","PTI","RTI","Payment Cap Gap"].includes(m)}
-  function valueForMetric(row){if(!row)return NaN;if(metric==="Median Rent")return row.MedianRent_week_adj;if(metric==="Median Price")return row.MedianPrice_adj;if(metric==="Median Income")return row.MedianIncome_annual;if(metric==="PTI")return row.PTI;if(metric==="Payment Cap Gap"){const g=capGapBySA2.find(x=>x.SA2_CODE===row.SA2_CODE)?.gap;return g}return row.RTI}
-  const metricValsRaw=bySA2Latest.map(valueForMetric).filter(v=>Number.isFinite(v));const minV=metricValsRaw.length?Math.min(...metricValsRaw):0;const maxV=metricValsRaw.length?Math.max(...metricValsRaw):1;
-  const focusVal=valueForMetric(focusRow||{});
-  function onCellEnter(e,code,val){try{const svg=e.currentTarget.ownerSVGElement;const rect=svg.getBoundingClientRect();setHover({x:e.clientX-rect.left+8,y:e.clientY-rect.top+8,code,val})}catch(err){}}
-  function onCellMove(e){if(!hover)return;try{const svg=e.currentTarget.ownerSVGElement||e.currentTarget;const rect=svg.getBoundingClientRect();setHover(h=>h?{...h,x:e.clientX-rect.left+8,y:e.clientY-rect.top+8}:h)}catch(err){}}
-  function onCellLeave(){setHover(null)}
+sa2_all = grid["SA2_CODE"].tolist()
+selected = st.sidebar.multiselect("Сравнение районов (до 3)", sa2_all[:6], default=sa2_all[:3], max_selections=3)
 
-  return (<div className="p-4 space-y-4">
-    <h1 className="text-2xl font-semibold">🏠 Дэшборд доступности жилья — Sydney</h1>
-    <div className="flex items-center gap-3 p-2 rounded-xl bg-white shadow w-max">
-      <button className={`px-3 py-1 rounded-lg ${segment==='tenants'?'bg-gray-900 text-white':'bg-gray-100'}`} onClick={()=>setSegment('tenants')}>Аренда</button>
-      <button className={`px-3 py-1 rounded-lg ${segment==='buyers'?'bg-gray-900 text-white':'bg-gray-100'}`} onClick={()=>setSegment('buyers')}>Покупка</button>
-    </div>
+st.sidebar.divider()
+st.sidebar.markdown("**Покупка — финансы**")
+income_user = st.sidebar.number_input("Доход /год (A$)", value=95000, min_value=0, step=1000)
+savings = st.sidebar.number_input("Накопления (A$)", value=40000, min_value=0, step=1000)
+deposit_pct = st.sidebar.slider("Deposit (%)", 5, 30, 20)
+interest = st.sidebar.slider("Ставка ипотеки (% год.)", 2.0, 10.0, 6.0, step=0.1)
+mortgage_years = st.sidebar.slider("Срок ипотеки (лет)", 1, 30, 25)
+max_monthly = st.sidebar.number_input("Макс. платёж /мес (A$)", value=2500, min_value=0, step=50)
 
-    <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-      <div className="col-span-1 space-y-3 p-4 rounded-2xl shadow bg-white">
-        <h2 className="font-medium">Карта: слой</h2>
-        <select className="w-full border rounded p-2" value={metric} onChange={e=>setMetric(e.target.value)}>
-          <option>RTI</option><option>PTI</option><option>Median Rent</option><option>Median Price</option><option>Median Income</option><option>Payment Cap Gap</option>
-        </select>
-        <label className="text-sm">Спален: {bedrooms}</label>
-        <input type="range" min={1} max={3} value={bedrooms} onChange={e=>setBedrooms(+e.target.value)} />
-        <div className="flex items-center gap-2 mt-2">
-          <input id="realgeo" type="checkbox" className="scale-110" checked={useRealGeo} onChange={e=>setUseRealGeo(e.target.checked)} />
-          <label htmlFor="realgeo" className="text-sm">Реальные SA2 полигоны</label>
-          {useRealGeo && (<span className="text-xs ml-2 px-2 py-0.5 rounded bg-gray-100">
-            {geoStatus==='loading'&&'загрузка…'}{geoStatus==='ready'&&'готово'}{geoStatus==='error'&&'ошибка — сетка'}
-          </span>)}
-        </div>
+# ---------- filtering ----------
+end_idx = len(months)-1
+if preset == "Max": start_idx = 0
+elif preset == "1y": start_idx = max(0, end_idx-12)
+elif preset == "3y": start_idx = max(0, end_idx-36)
+else: start_idx = max(0, end_idx-60)
+month_set = set([d.strftime("%Y-%m") for d in months[start_idx:]])
+dfp = df[df["date"].isin(month_set)].copy()
 
-        <hr className="my-2" />
-        <h2 className="font-medium">Период</h2>
-        <select className="w-full border rounded p-2" value={preset} onChange={e=>setPreset(e.target.value)}>
-          <option value="Max">Max</option><option value="5y">5 лет</option><option value="3y">3 года</option><option value="1y">1 год</option>
-        </select>
+# ---------- latest snapshot & metrics ----------
+brR = RENT_BEDROOM_COEFFS.get(bedrooms,1.0)
+brP = PRICE_BEDROOM_COEFFS.get(bedrooms,1.0)
 
-        <hr className="my-2" />
-        <h2 className="font-medium">Сравнение районов</h2>
-        <div className="space-y-2 max-h-48 overflow-auto border rounded p-2">
-          {sa2.map(s=>(
-            <label key={s.code} className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={selected.includes(s.code)} onChange={()=>{
-                if(selected.includes(s.code)) setSelected(selected.filter(x=>x!==s.code));
-                else if(selected.length<3) setSelected([...selected,s.code]);
-              }}/>
-              {s.code}
-            </label>
-          ))}
-        </div>
-      </div>
+snap = (dfp[dfp["date"]==last_month]
+        .assign(MedianRent_week_adj=lambda x: x.MedianRent_week*brR,
+                MedianPrice_adj=lambda x: x.MedianPrice*brP,
+                PTI=lambda x: x.MedianPrice_adj/x.MedianIncome_annual,
+                RTI=lambda x: (x.MedianRent_week_adj*52)/x.MedianIncome_annual))
 
-      <div className="col-span-3 p-4 rounded-2xl shadow bg-white">
-        <h2 className="font-medium mb-2">🗺️ SA2 слой {useRealGeo?"(реальный)":"(сетка)"}</h2>
-        {!useRealGeo || !geojson ? (
-          <div className="relative">
-            <svg viewBox="0 0 400 300" className="w-full h-[340px] rounded-xl border" onMouseMove={onCellMove}>
-              {sa2.map(s=>{const w=400/4,h=300/3,x=s.c*w,y=s.r*h;const row=bySA2Latest.find(r=>r.SA2_CODE===s.code);
-                const val=valueForMetric(row||{});const color=colorGYR(val,minV=maxV=>maxV,minV?minV:0,!higherIsBad(metric));
-                const focus=s.code===focusSA2;return(
-                <g key={s.code} onClick={()=>setFocusSA2(s.code)} onMouseEnter={e=>onCellEnter(e,s.code,fmtMetric(metric,val))} onMouseLeave={onCellLeave} style={{cursor:'pointer'}}>
-                  <rect x={x+2} y={y+2} width={w-4} height={h-4} rx={8} fill={colorGYR(val, Math.min(...metricValsRaw), Math.max(...metricValsRaw), !higherIsBad(metric))} stroke={focus?"#111":"#fff"} strokeWidth={focus?3:2}/>
-                  <text x={x+w/2} y={y+h/2} textAnchor="middle" dominantBaseline="middle" fontSize="12" fill="#000" style={{userSelect:'none'}}>{s.code}</text>
-                </g>)})}
-            </svg>
-            {hover && (<div className="absolute pointer-events-none bg-white/95 border rounded-lg shadow px-2 py-1 text-xs" style={{left:hover.x, top:hover.y}}>
-              <div><b>{hover.code}</b></div><div>{metric}: <b>{hover.val}</b></div><div>Дата: {lastMonthStr}</div></div>)}
-          </div>
-        ) : (
-          <>
-            <GeoMapSA2 geojson={geojson} metric={metric} bedrooms={bedrooms} depositPct={depositPct} interest={interest} maxMonthly={maxMonthly} lastMonthStr={lastMonthStr} onHover={setHover} onLeave={()=>setHover(null)} onFocus={setFocusSA2}/>
-            {hover && (<div className="relative"><div className="absolute pointer-events-none bg-white/95 border rounded-lg shadow px-2 py-1 text-xs" style={{left:Math.max(0,hover.x), top:Math.max(0,hover.y)}}>
-              <div><b>{hover.code}</b></div><div>{metric}: <b>{hover.val}</b></div><div>Дата: {lastMonthStr}</div></div></div>)}
-          </>
-        )}
-        <div className="text-xs opacity-70 mt-1">Метрика: <b>{metric}</b>. Фокус: <b>{focusSA2}</b> — <b>{fmtMetric(metric, valueForMetric(focusRow||{}))}</b>.</div>
-      </div>
-    </div>
+focus_sa2 = selected[0] if selected else sa2_all[0]
+focus_row = snap[snap.SA2_CODE==focus_sa2].iloc[0] if not snap[snap.SA2_CODE==focus_sa2].empty else snap.iloc[0]
 
-    <div className="p-4 rounded-2xl shadow bg-white">
-      <h2 className="font-medium mb-2">📊 Сравнение</h2>
-      <div className="overflow-auto">
-        <table className="w-full text-sm">
-          <thead><tr className="bg-gray-50">
-            <th className="p-2 text-left">SA2</th><th className="p-2 text-right">Median Price</th><th className="p-2 text-right">Median Rent ({bedrooms}BR,/нед)</th><th className="p-2 text-right">Income</th><th className="p-2 text-right">PTI</th><th className="p-2 text-right">RTI</th><th className="p-2 text-right">Cap Gap</th>
-          </tr></thead>
-          <tbody>
-            {bySA2Latest.filter(r=>selected.includes(r.SA2_CODE)).map(r=>{const gap=capGapBySA2.find(x=>x.SA2_CODE===r.SA2_CODE)?.gap;return(
-              <tr key={r.SA2_CODE} className="border-t">
-                <td className="p-2">{r.SA2_CODE}</td>
-                <td className="p-2 text-right">{fmtMoney(Math.round(r.MedianPrice_adj))}</td>
-                <td className="p-2 text-right">{fmtMoney(Math.round(r.MedianRent_week_adj))}</td>
-                <td className="p-2 text-right">{fmtMoney(Math.round(r.MedianIncome_annual))}</td>
-                <td className="p-2 text-right">{r.PTI.toFixed(1)}</td>
-                <td className="p-2 text-right">{(r.RTI*100).toFixed(1)}%</td>
-                <td className="p-2 text-right">{Number.isFinite(gap)?(gap<=0?"✅":"❌")+" "+(gap*100).toFixed(1)+"%":"—"}</td>
-              </tr>)})}
-          </tbody>
-        </table>
-      </div>
-    </div>
+price_adj = float(focus_row.MedianPrice_adj)
+income = float(income_user)
+deposit_target = deposit_pct/100 * price_adj
+loan_principal = max(0.0, price_adj - deposit_target)
+monthly_payment = annuity_monthly(loan_principal, interest/100.0, mortgage_years)
+mti = (monthly_payment*12) / max(1e-9, income)
 
-    {segment==='buyers'
-      ? <BuyerPanel {...{priceAdj,income,setIncomeUser,savings,setSavings,depositPct,setDepositPct,interest,setInterest,mortgageYears,setMortgageYears,S_priceAdj,S_depositTarget,S_income,LcapMap,LcapUser,maxMonthly,setMaxMonthly,targetMTI,setTargetMTI,mti}}/>
-      : <TenantPanel {...{focusSA2,bedrooms,rentAdjWeek,rentAdjMonth,rtiUser,S_rentAdjWeek,S_rentAdjMonth,incomeUser,setIncomeUser}}/>
-    }
+# Cap-gap map baseline at fixed 25y:
+LcapMap = principal_from_monthly(max_monthly, interest/100.0, 25)
+cap_gap = (snap.assign(L_needed=lambda x: x.MedianPrice_adj*(1-deposit_pct/100.0))
+                .assign(gap=lambda x: (x.L_needed - LcapMap)/x.MedianPrice_adj)
+                [["SA2_CODE","gap"]])
 
-    <div className="p-4 rounded-2xl shadow bg-white">
-      <h2 className="font-medium mb-2">📈 Динамика</h2>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {segment==='tenants'
-          ? <>
-              <ChartBlock title={`Median Rent (${bedrooms}BR, месяц)`} seriesKey="RentMonthly" ts={tsWithMedian(rows,months,startIndex,bedrooms,selected,sa2)} colorizer={(v,min,max)=>colorGYR(v,min,max,true)}/>
-              <ChartBlock title="RTI" seriesKey="RTI" ts={tsWithMedian(rows,months,startIndex,bedrooms,selected,sa2)} thresholds={{green:[0,.25],amber:[.25,.30],red:[.30,1]}} colorizer={(v,min,max)=>colorGYR(v,min,max,true)}/>
-            </>
-          : <>
-              <ChartBlock title={`Median Rent (${bedrooms}BR, неделя)`} seriesKey="Rent" ts={tsWithMedian(rows,months,startIndex,bedrooms,selected,sa2)} colorizer={(v,min,max)=>colorGYR(v,min,max,true)}/>
-              <ChartBlock title="Median Price" seriesKey="Price" ts={tsWithMedian(rows,months,startIndex,bedrooms,selected,sa2)} colorizer={(v,min,max)=>colorGYR(v,min,max,true)}/>
-              <ChartBlock title="PTI" seriesKey="PTI" ts={tsWithMedian(rows,months,startIndex,bedrooms,selected,sa2)} thresholds={{green:[0,8],amber:[8,10],red:[10,99]}} colorizer={(v,min,max)=>colorGYR(v,min,max,true)}/>
-              <ChartBlock title="RTI" seriesKey="RTI" ts={tsWithMedian(rows,months,startIndex,bedrooms,selected,sa2)} thresholds={{green:[0,.25],amber:[.25,.30],red:[.30,1]}} colorizer={(v,min,max)=>colorGYR(v,min,max,true)}/>
-            </>
-        }
-      </div>
-    </div>
+def value_for_metric(row):
+    if metric=="Median Rent": return row.MedianRent_week_adj
+    if metric=="Median Price": return row.MedianPrice_adj
+    if metric=="Median Income": return row.MedianIncome_annual
+    if metric=="PTI": return row.PTI
+    if metric=="Payment Cap Gap":
+        g = cap_gap.loc[cap_gap.SA2_CODE==row.SA2_CODE,"gap"]
+        return float(g.iloc[0]) if not g.empty else np.nan
+    return row.RTI
 
-    <div className="text-xs opacity-70">Данные синтетические.</div>
-  </div>);
-}
+vals = snap.apply(value_for_metric, axis=1)
+vmin, vmax = float(np.nanmin(vals)), float(np.nanmax(vals))
+higher_is_bad = metric in ["Median Price","Median Rent","PTI","RTI","Payment Cap Gap"]
 
-function BuyerPanel(p){const{priceAdj,income,setIncomeUser,savings,setSavings,depositPct,setDepositPct,interest,setInterest,mortgageYears,setMortgageYears,S_priceAdj,S_depositTarget,S_income,LcapMap,LcapUser,maxMonthly,setMaxMonthly,targetMTI,setTargetMTI,mti}=p;const depositTarget=(Number(depositPct||0)/100)*Number(priceAdj||0);const loanPrincipal=Math.max(0,Number(priceAdj||0)-depositTarget);const monthlyPayment=annuityMonthly(loanPrincipal,Number(interest||0)/100,Math.max(1,Number(mortgageYears||1)));const monthly25=annuityMonthly(loanPrincipal,Number(interest||0)/100,25);const mti25=(monthly25*12)/Math.max(1e-9,Number(income||0));const[buyerMode,setBuyerMode]=useState('budget');const P_affordable=Number(LcapUser||0)/Math.max(1e-9,1-(Number(depositPct||0)/100));const incomeRequiredFixedSR=(monthlyPayment*12)/.25;return(<div className="p-4 rounded-2xl shadow bg-white"><h2 className="font-medium mb-2">🏡 Покупка</h2><div className="flex items-center gap-2 mb-3"><span className="text-sm mr-2">Режим:</span><button className={`px-3 py-1 rounded-lg text-sm ${buyerMode==='budget'?'bg-gray-900 text-white':'bg-gray-100'}`} onClick={()=>setBuyerMode('budget')}>По бюджету</button><button className={`px-3 py-1 rounded-lg text-sm ${buyerMode==='fixed25'?'bg-gray-900 text-white':'bg-gray-100'}`} onClick={()=>setBuyerMode('fixed25')}>25 лет → MTI</button><button className={`px-3 py-1 rounded-lg text-sm ${buyerMode==='termIncome'?'bg-gray-900 text-white':'bg-gray-100'}`} onClick={()=>setBuyerMode('termIncome')}>Срок→доход</button></div><div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm mb-3"><label className="p-3 rounded-xl bg-gray-50 flex flex-col">Доход /год<input className="border rounded p-2 mt-1" type="number" value={Number.isFinite(income)?income:''} onChange={e=>setIncomeUser(+e.target.value||0)}/></label><label className="p-3 rounded-xl bg-gray-50 flex flex-col">Накопления<input className="border rounded p-2 mt-1" type="number" value={Number.isFinite(savings)?savings:''} onChange={e=>setSavings(+e.target.value||0)}/><span className="text-xs opacity-70 mt-1">Идут на депозит</span></label>{buyerMode==='budget'&&(<label className="p-3 rounded-xl bg-gray-50 flex flex-col">Макс платёж (/мес)<input className="border rounded p-2 mt-1" type="number" value={Number.isFinite(maxMonthly)?maxMonthly:''} onChange={e=>setMaxMonthly(+e.target.value||0)}/><span className="text-xs opacity-70 mt-1">Месячный бюджет</span></label>)}</div><div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm mb-3"><label className="p-3 rounded-xl bg-gray-50 flex flex-col">Deposit %<input type="range" min={5} max={30} value={depositPct} onChange={e=>setDepositPct(+e.target.value)}/><div className="mt-1">{depositPct}%</div></label><label className="p-3 rounded-xl bg-gray-50 flex flex-col">Ставка %<input type="range" min={2} max={10} step={.1} value={interest} onChange={e=>setInterest(+e.target.value)}/><div className="mt-1">{Number(interest).toFixed(1)}%</div></label>{buyerMode!=='fixed25'?(<label className="p-3 rounded-xl bg-gray-50 flex flex-col">Срок (лет)<input type="range" min={1} max={30} value={mortgageYears} onChange={e=>setMortgageYears(+e.target.value)}/><div className="mt-1">{mortgageYears} лет</div></label>):(<div className="p-3 rounded-xl bg-gray-50 text-sm">Срок: 25 лет</div>)}</div>{buyerMode==='budget'&&(<div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm"><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Доступная цена</div><div className="font-semibold">{fmtMoney(Math.round(P_affordable))}</div><div className="text-xs opacity-70">Слой Cap Gap на карте</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Платёж</div><div className="font-semibold">{fmtMoney(Math.round(monthlyPayment))}/мес</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">MTI</div><div className="font-semibold">{(mti*100).toFixed(1)}%</div></div></div>)}{buyerMode==='fixed25'&&(<div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm"><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Платёж 25л</div><div className="font-semibold">{fmtMoney(Math.round(monthly25))}/мес</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">MTI</div><div className="font-semibold">{(mti25*100).toFixed(1)}%</div><div className="text-xs opacity-70">До 30% ок</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Цена</div><div className="font-semibold">{S_priceAdj}</div></div></div>)}{buyerMode==='termIncome'&&(<div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm"><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Нужен доход (25%)</div><div className="font-semibold">{fmtMoney(Math.round(incomeRequiredFixedSR))}</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Платёж</div><div className="font-semibold">{fmtMoney(Math.round(monthlyPayment))}/мес</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Цена</div><div className="font-semibold">{S_priceAdj}</div></div></div>)}<div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4"><div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm"><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Цена</div><div className="font-semibold">{S_priceAdj}</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Депозит</div><div className="font-semibold">{S_depositTarget}</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Доход</div><div className="font-semibold">{S_income}</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Платёж</div><div className="font-semibold">{fmtMoney(Math.round(buyerMode==='fixed25'?monthly25:monthlyPayment))}/мес</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">MTI</div><div className="font-semibold">{(((buyerMode==='fixed25'?mti25:mti)*100)).toFixed(1)}%</div></div></div><div className="p-3 rounded-xl bg-gray-50 text-sm"><div className="font-medium mb-1">Пояснение</div><div>{buyerMode==='budget'&&("Лимит /мес → где покупка вписывается")} {buyerMode==='fixed25'&&("Фикс 25 лет → доля дохода")} {buyerMode==='termIncome'&&("MTI=25% → какой доход нужен")}</div></div></div>{(buyerMode!=='termIncome'&&mti>=.40)&&<div className="mt-1 text-red-600 text-sm">MTI ≥ 40% — высокая нагрузка</div>}{(buyerMode!=='termIncome'&&mti>=.30&&mti<.40)&&<div className="mt-1 text-amber-600 text-sm">MTI 30–40% — повышенная</div>}</div>)}
-function TenantPanel({focusSA2,bedrooms,rentAdjWeek,rentAdjMonth,rtiUser,S_rentAdjWeek,S_rentAdjMonth,incomeUser,setIncomeUser}){return(<div className="p-4 rounded-2xl shadow bg-white"><h2 className="font-medium mb-2">🏘️ Аренда — {focusSA2}</h2><div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm mb-3"><label className="p-3 rounded-xl bg-gray-50 flex flex-col">Доход /год<input className="border rounded p-2 mt-1" type="number" value={incomeUser} onChange={e=>setIncomeUser(+e.target.value||0)}/></label><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Аренда ({bedrooms}BR, нед)</div><div className="font-semibold">{S_rentAdjWeek}</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">Аренда ({bedrooms}BR, мес)</div><div className="font-semibold">{S_rentAdjMonth}</div></div><div className="p-3 rounded-xl bg-gray-50"><div className="opacity-60">RTI</div><div className="font-semibold">{(rtiUser*100).toFixed(1)}%</div></div></div>{rtiUser>=.30&&<div className="mt-2 text-red-600 text-sm">RTI ≥ 30% — стресс</div>}{rtiUser>=.25&&rtiUser<.30&&<div className="mt-2 text-amber-600 text-sm">RTI 25–30% — граница</div>}<div className="text-xs opacity-70 mt-2">RTI = (годовая аренда / доход). Коэф.: 1.00/1.35/1.75.</div></div>)}
-function GeoMapSA2({geojson,metric,bedrooms,depositPct,interest,maxMonthly,lastMonthStr,onHover,onLeave,onFocus}){function hash32(str){let h=2166136261>>>0;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619)}return h>>>0}function getName(p){return p?.SA2_NAME21||p?.SA2_NAME_2021||p?.SA2_NAME16||p?.SA2_NAME_2016||p?.SA2_NAME||p?.NAME||p?.id||'SA2'}function getCode(p){return p?.SA2_MAIN21||p?.SA2_MAINCODE_2021||p?.SA2_MAIN16||p?.SA2_MAINCODE_2016||p?.SA2_CODE||getName(p)}function higherIsBadLocal(m){return["Median Price","Median Rent","PTI","RTI","Payment Cap Gap"].includes(m)}const coordsAll=[];geojson.features.forEach(f=>{const g=f.geometry;if(!g)return;const push=c=>coordsAll.push(c);const walk=geom=>{const type=geom.type,cs=geom.coordinates;if(type==='Polygon')cs.forEach(r=>r.forEach(pt=>push(pt)));else if(type==='MultiPolygon')cs.forEach(poly=>poly.forEach(r=>r.forEach(pt=>push(pt))))};walk(g)});if(!coordsAll.length)return<div className="p-3 rounded-xl bg-gray-50">GeoJSON пуст</div>;const lons=coordsAll.map(c=>c[0]),lats=coordsAll.map(c=>c[1]);const minLon=Math.min(...lons),maxLon=Math.max(...lons),minLat=Math.min(...lats),maxLat=Math.max(...lats);const W=800,H=520,pad=10;const sx=(W-2*pad)/(maxLon-minLon),sy=(H-2*pad)/(maxLat-minLat);const s=Math.min(sx,sy);const proj=([lon,lat])=>[pad+(lon-minLon)*s,pad+(maxLat-lat)*s];const pathFromGeom=geom=>{const cs=geom.coordinates;let d="";if(geom.type==='Polygon'){cs.forEach(r=>{r.forEach((pt,i)=>{const[x,y]=proj(pt);d+=(i?`L${x},${y}`:`M${x},${y}`)});d+="Z"})}else if(geom.type==='MultiPolygon'){cs.forEach(poly=>{poly.forEach(r=>{r.forEach((pt,i)=>{const[x,y]=proj(pt);d+=(i?`L${x},${y}`:`M${x},${y}`)});d+="Z"})})}return d};const LcapMap=principalFromMonthly(Number(maxMonthly||0),Number(interest||0)/100,25);const RENT={1:1,2:1.35,3:1.75}[bedrooms]||1;const vals=geojson.features.map(f=>{const p=f.properties||{};const code=String(getCode(p));const name=getName(p);let seed=hash32(code);const rnd=()=>{seed|=0;seed=(seed+0x6D2B79F5)|0;let t=Math.imul(seed^seed>>>15,1|seed);t=(t+Math.imul(t^t>>>7,61|t))^t;return((t^t>>>14)>>>0)/4294967296};const price=600000+rnd()*900000;const rentW=380+rnd()*520;const income=65000+rnd()*60000;const P=price*({1:.85,2:1,3:1.25}[bedrooms]||1);const Rw=rentW*RENT;const I=income;const PTI=P/I;const RTI=(Rw*52)/I;const L_needed=P*(1-(Number(depositPct||0)/100));const gap=(L_needed-LcapMap)/Math.max(1e-9,P);const pick=metric==='Median Price'?P:metric==='Median Rent'?Rw:metric==='Median Income'?I:metric==='PTI'?PTI:metric==='Payment Cap Gap'?gap:RTI;return{name,code,value:pick,display:fmtMetric(metric,pick),geom:f.geometry}});const nums=vals.map(v=>v.value).filter(Number.isFinite);const vmin=Math.min(...nums),vmax=Math.max(...nums);const[scale,setScale]=useState(1);const[pan,setPan]=useState({x:0,y:0});const[drag,setDrag]=useState(null);const onWheel=e=>{e.preventDefault();const k=Math.exp(-e.deltaY*.001);setScale(s=>Math.max(.8,Math.min(8,s*k)))};const onMouseDown=e=>setDrag({x:e.clientX,y:e.clientY,pan0:{...pan}});const onMouseMove=e=>{if(!drag)return;setPan({x:drag.pan0.x+(e.clientX-drag.x),y:drag.pan0.y+(e.clientY-drag.y)})};const endDrag=()=>setDrag(null);return(<div className="relative"><svg viewBox={`0 0 ${W} ${H}`} className="w-full h-[520px] rounded-xl border bg-white" onWheel={onWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={endDrag} onMouseLeave={()=>{endDrag();onLeave&&onLeave();}}><g transform={`translate(${pan.x} ${pan.y}) scale(${scale})`}>{vals.map(v=>{const d=pathFromGeom(v.geom);const color=colorGYR(v.value,vmin,vmax,!higherIsBadLocal(metric));return(<path key={v.code} d={d} fill={color} stroke="#fff" strokeWidth={.8} onMouseEnter={e=>{const rect=e.currentTarget.ownerSVGElement.getBoundingClientRect();onHover&&onHover({x:e.clientX-rect.left+8,y:e.clientY-rect.top+8,code:v.name,val:v.display})}} onMouseLeave={()=>onLeave&&onLeave()} onClick={()=>onFocus&&onFocus(v.name)}><title>{`${v.name} — ${metric}: ${v.display}\nДата: ${lastMonthStr}`}</title></path>)})}</g></svg><div className="absolute top-2 right-2 bg-white/90 rounded-md shadow px-2 py-1 text-xs">Зум: колесо • Пан: перетаскивание</div></div>)}
-function tsWithMedian(rows,months,startIndex,bedrooms,selected,sa2){const RENT=RENT_BEDROOM_COEFFS[bedrooms]||1;const set=new Set(months.slice(startIndex).map(d=>d.toISOString().slice(0,7)));const seriesByCode={};(selected.length?selected:[sa2[0].code]).forEach(c=>seriesByCode[c]=[]);rows.forEach(r=>{if(!set.has(r.date))return;if(seriesByCode[r.SA2_CODE])seriesByCode[r.SA2_CODE].push({date:r.date,Rent:r.MedianRent_week*RENT,RentMonthly:r.MedianRent_week*RENT*52/12,Price:r.MedianPrice,PTI:r.MedianPrice/r.MedianIncome_annual,RTI:(r.MedianRent_week*RENT*52)/r.MedianIncome_annual})});const grouped=new Map();rows.forEach(r=>{if(!set.has(r.date))return;if(!grouped.has(r.date))grouped.set(r.date,[]);grouped.get(r.date).push({Rent:r.MedianRent_week*RENT,RentMonthly:r.MedianRent_week*RENT*52/12,Price:r.MedianPrice,PTI:r.MedianPrice/r.MedianIncome_annual,RTI:(r.MedianRent_week*RENT*52)/r.MedianIncome_annual})});const medianSeries=Array.from(grouped.keys()).sort().map(d=>{const arr=grouped.get(d);function med(k){const xs=arr.map(a=>a[k]).sort((a,b)=>a-b);const i=Math.floor(xs.length/2);return xs.length%2?xs[i]:(xs[i-1]+xs[i])/2}return{date:d,value:{Rent:med('Rent'),RentMonthly:med('RentMonthly'),Price:med('Price'),PTI:med('PTI'),RTI:med('RTI')}}});return{seriesByCode,medianSeries}}
-function ChartBlock({title,seriesKey,ts,thresholds,colorizer}){const codes=Object.keys(ts.seriesByCode);const med=new Map(ts.medianSeries.map(p=>[p.date,p.value[seriesKey]]));const dates=[...new Set(ts.medianSeries.map(p=>p.date))].sort();const data=dates.map(d=>{const o={date:d,median:med.get(d)};codes.forEach(c=>{const pt=(ts.seriesByCode[c]||[]).find(x=>x.date===d);o[c]=pt?pt[seriesKey]:undefined});return o});let ymin=Infinity,ymax=-Infinity;data.forEach(r=>{if(Number.isFinite(r.median)){ymin=Math.min(ymin,r.median);ymax=Math.max(ymax,r.median)}codes.forEach(c=>{const v=r[c];if(Number.isFinite(v)){ymin=Math.min(ymin,v);ymax=Math.max(ymax,v)}})});if(!Number.isFinite(ymin)){ymin=0;ymax=1}const inv=['Median Income'].includes(title)||seriesKey==='Income'?false:true;return(<div className="p-3 rounded-xl bg-gray-50"><div className="font-medium mb-1">{title}</div><div className="h-64"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data} margin={{left:6,right:10,top:10,bottom:0}}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="date" tick={{fontSize:10}}/><YAxis width={46} tick={{fontSize:10}}/><Tooltip/><Legend/>{thresholds&&(<><ReferenceArea y1={thresholds.green[0]} y2={thresholds.green[1]} fill={withAlpha('rgb(0,128,0)',.10)}/><ReferenceArea y1={thresholds.amber[0]} y2={thresholds.amber[1]} fill={withAlpha('rgb(255,215,0)',.10)}/><ReferenceArea y1={thresholds.red[0]} y2={thresholds.red[1]} fill={withAlpha('rgb(220,20,60)',.08)}/></>)}{codes.map((c,i)=>(<Area key={c} type="monotone" dataKey={c} connectNulls strokeWidth={1.5} fillOpacity={.12} stroke={colorizer((i+1)/(codes.length+2),0,1,inv)} fill={withAlpha(colorizer((i+1)/(codes.length+2),0,1,inv),.15)}/>))}<Line type="monotone" dataKey="median" stroke="#111" strokeWidth={3} dot={false}/></AreaChart></ResponsiveContainer></div></div>) }
+# ---------- layout ----------
+st.markdown("## 🏠 Дэшборд доступности жилья — Sydney (SA2, synthetic)")
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
-</script>
-</body>
-</html>
-""", height=1400, scrolling=True)
+# === map (grid 3x4) ===
+def map_grid_fig():
+    dfm = snap.merge(grid, on="SA2_CODE")
+    dfm["val"] = dfm.apply(value_for_metric, axis=1)
+    W,H = 400, 300
+    w, h = W/4.0, H/3.0
+    fig = go.Figure()
+    # tiles
+    for _, r in dfm.iterrows():
+        x0, y0 = r["col"]*w, r["row"]*h
+        x1, y1 = x0+w, y0+h
+        t = 0 if vmax==vmin else (r["val"]-vmin)/(vmax-vmin)
+        if higher_is_bad:
+            c = px.colors.sample_colorscale(color_scale_gyr(False), t)[0]
+        else:
+            c = px.colors.sample_colorscale(color_scale_gyr(True), t)[0]
+        fig.add_shape(type="rect", x0=x0+2, x1=x1-2, y0=y0+2, y1=y1-2,
+                      line=dict(color="#111" if r["SA2_CODE"]==focus_sa2 else "white", width=3 if r["SA2_CODE"]==focus_sa2 else 2),
+                      fillcolor=c)
+        fig.add_trace(go.Scatter(x=[(x0+x1)/2], y=[(y0+y1)/2],
+                                 text=[r["SA2_CODE"]],
+                                 mode="text",
+                                 hovertext=f"{r['SA2_CODE']} — {metric}: {r['val']:.3g}",
+                                 hoverinfo="text"))
+    fig.update_xaxes(visible=False, range=[0,W])
+    fig.update_yaxes(visible=False, range=[H,0])
+    fig.update_layout(height=360, margin=dict(l=10,r=10,t=10,b=10),
+                      plot_bgcolor="white", paper_bgcolor="white",
+                      showlegend=False)
+    return fig
+
+c1, c2 = st.columns([1,2])
+with c1:
+    st.subheader("Карта: слой")
+    st.caption(f"Метрика: **{metric}**. Фокус: **{focus_sa2}** — **{(value_for_metric(focus_row)* (100 if metric in ['RTI'] else 1)):.1f}{'%' if metric=='RTI' else ''}**")
+with c2:
+    st.plotly_chart(map_grid_fig(), use_container_width=True)
+
+# === comparison table ===
+st.subheader("📊 Сравнение выбранных SA2")
+tbl = (snap[snap.SA2_CODE.isin(selected)]
+       .merge(cap_gap, on="SA2_CODE")
+       .loc[:, ["SA2_CODE","MedianPrice_adj","MedianRent_week_adj","MedianIncome_annual","PTI","RTI","gap"]]
+       .rename(columns={
+           "SA2_CODE":"SA2",
+           "MedianPrice_adj":"Median Price",
+           "MedianRent_week_adj":f"Median Rent ({bedrooms}BR, /нед)",
+           "MedianIncome_annual":"Income (/год)",
+           "gap":"Payment Cap Gap"
+       }))
+tbl_display = tbl.copy()
+tbl_display["Median Price"] = tbl_display["Median Price"].map(money)
+tbl_display[f"Median Rent ({bedrooms}BR, /нед)"] = tbl_display[f"Median Rent ({bedrooms}BR, /нед)"].map(money)
+tbl_display["Income (/год)"] = tbl_display["Income (/год)"].map(money)
+tbl_display["PTI"] = tbl_display["PTI"].map(lambda x: f"{x:.1f}")
+tbl_display["RTI"] = tbl_display["RTI"].map(lambda x: f"{x*100:.1f}%")
+tbl_display["Payment Cap Gap"] = tbl_display["Payment Cap Gap"].map(lambda g: ("✅ " if g<=0 else "❌ ") + f"{g*100:.1f}%")
+st.dataframe(tbl_display, use_container_width=True, hide_index=True)
+
+# === segment panels ===
+st.subheader("🔧 Параметры и расчёты")
+if segment_key == "buyers":
+    monthly25 = annuity_monthly(loan_principal, interest/100.0, 25)
+    mti25 = (monthly25*12)/max(1e-9,income)
+    LcapUser = principal_from_monthly(max_monthly, interest/100.0, mortgage_years)
+    P_affordable = LcapUser / max(1e-9, 1 - deposit_pct/100.0)
+
+    cA, cB, cC = st.columns(3)
+    cA.metric("Цена (учтён размер)", money(price_adj))
+    cB.metric("Минимальный депозит", money(deposit_target))
+    cC.metric("Ваш доход /год", money(income))
+    cA.metric(f"Платёж при {mortgage_years} лет", f"{money(monthly_payment)}/мес")
+    cB.metric("MTI (доля дохода)", f"{mti*100:.1f}%")
+    cC.metric("Доступная цена по лимиту", money(P_affordable))
+    if mti >= 0.40:
+        st.warning("MTI ≥ 40% — высокая ипотечная нагрузка.")
+    elif mti >= 0.30:
+        st.warning("MTI 30–40% — повышенная нагрузка.")
+else:
+    rent_week = float(focus_row.MedianRent_week*brR)
+    rent_month = rent_week*52/12
+    rti_user = (rent_week*52)/max(1e-9, income)
+    cA, cB, cC = st.columns(3)
+    cA.metric(f"Аренда {bedrooms}BR (нед.)", money(rent_week))
+    cB.metric("Аренда (мес.)", money(rent_month))
+    cC.metric("RTI", f"{rti_user*100:.1f}%")
+    if rti_user >= 0.30:
+        st.warning("RTI ≥ 30% — арендный стресс.")
+    elif rti_user >= 0.25:
+        st.info("RTI 25–30% — пограничная нагрузка.")
+
+# === time series ===
+def ts_with_median(series_key: str):
+    RENT = RENT_BEDROOM_COEFFS.get(bedrooms,1.0)
+    sub = df[df["date"].isin(month_set)].copy()
+    sub["Rent"] = sub["MedianRent_week"]*RENT
+    sub["RentMonthly"] = sub["Rent"]*52/12
+    sub["Price"] = sub["MedianPrice"]
+    sub["PTI"] = sub["MedianPrice"]/sub["MedianIncome_annual"]
+    sub["RTI"] = (sub["Rent"]*52)/sub["MedianIncome_annual"]
+
+    # per selected SA2
+    lines = []
+    for code in (selected if selected else [sa2_all[0]]):
+        d = sub[sub.SA2_CODE==code][["date",series_key]].sort_values("date")
+        d = d.rename(columns={series_key: code})
+        lines.append(d.set_index("date"))
+
+    # city median
+    med = (sub.groupby("date")[series_key]
+             .median()
+             .rename("median")).to_frame()
+
+    # merge
+    base = med.copy()
+    for s in lines:
+        base = base.join(s, how="left")
+    base = base.reset_index().sort_values("date")
+    return base
+
+def ts_fig(title, key, thresholds=None, invert=False):
+    data = ts_with_median(key)
+    fig = go.Figure()
+    # thresholds bands
+    if thresholds:
+        for (y1,y2,color) in thresholds:
+            fig.add_shape(type="rect", xref="paper", x0=0, x1=1, y0=y1, y1=y2,
+                          fillcolor=color, opacity=0.12, layer="below", line_width=0)
+    # series
+    for col in data.columns:
+        if col in ("date","median"): continue
+        fig.add_trace(go.Scatter(x=data["date"], y=data[col], name=col,
+                                 mode="lines", line=dict(width=1.5)))
+    fig.add_trace(go.Scatter(x=data["date"], y=data["median"], name="Median (city)",
+                             mode="lines", line=dict(color="black", width=3)))
+    fig.update_layout(title=title, height=340, margin=dict(l=10,r=10,t=40,b=10))
+    return fig
+
+st.subheader("📈 Динамика")
+
+if segment_key == "tenants":
+    c1, c2 = st.columns(2)
+    c1.plotly_chart(ts_fig(f"Median Rent ({bedrooms}BR, месяц)", "RentMonthly"), use_container_width=True)
+    c2.plotly_chart(ts_fig("RTI", "RTI",
+                           thresholds=[(0,0.25,"green"),(0.25,0.30,"gold"),(0.30,1.0,"crimson")]),
+                    use_container_width=True)
+else:
+    c1, c2 = st.columns(2)
+    c1.plotly_chart(ts_fig(f"Median Rent ({bedrooms}BR, неделя)", "Rent"), use_container_width=True)
+    c2.plotly_chart(ts_fig("Median Price", "Price"), use_container_width=True)
+    c3, c4 = st.columns(2)
+    c3.plotly_chart(ts_fig("PTI", "PTI",
+                           thresholds=[(0,8,"green"),(8,10,"gold"),(10,99,"crimson")]),
+                    use_container_width=True)
+    c4.plotly_chart(ts_fig("RTI", "RTI",
+                           thresholds=[(0,0.25,"green"),(0.25,0.30,"gold"),(0.30,1.0,"crimson")]),
+                    use_container_width=True)
+
+st.caption("Данные синтетические. Цвета: зелёный лучше/дешевле, красный хуже/дороже.")
 
 
