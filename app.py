@@ -9,7 +9,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 
-# --- (опционально) клики по карте ---
+# --- клики по карте (опционально) ---
 try:
     from streamlit_plotly_events import plotly_events
     HAVE_PLOTLY_EVENTS = True
@@ -91,7 +91,7 @@ def load_synthetic():
             rows.append(dict(date=dt.strftime("%Y-%m"), SA2_CODE=code,
                              MedianPrice=P, MedianRent_week=Rw, MedianIncome_annual=I))
     df = pd.DataFrame(rows)
-    # grid 3x4
+    # сетка 3x4
     grid = pd.DataFrame({
         "SA2_CODE": sa2,
         "row": [0,0,0,0, 1,1,1,1, 2,2,2,2],
@@ -100,33 +100,41 @@ def load_synthetic():
     return df, grid, months
 
 # ---------- real SA2 polygons (auto-load) ----------
-ABS_ARCGIS = (
-    "https://geo.abs.gov.au/arcgis/rest/services/ASGS2021/SA2/MapServer/0/"
-    "query?f=geojson&outFields=*&spatialRel=esriSpatialRelIntersects"
-    "&geometry=150.5%2C-34.2%2C151.5%2C-33.5&geometryType=esriGeometryEnvelope&inSR=4326"
+# Официальный сервис ABS ASGS 2021 → SA2 (FeatureServer):
+# https://geo.abs.gov.au/arcgis/rest/services/ASGS2021/SA2/FeatureServer/0  (поддерживает f=geojson + нужные поля)  [ABS doc] :contentReference[oaicite:1]{index=1}
+ABS_QUERY = (
+    "https://geo.abs.gov.au/arcgis/rest/services/ASGS2021/SA2/FeatureServer/0/query"
+    "?f=geojson"
+    "&where=gccsa_name_2021%3D%27Greater%20Sydney%27"
+    "&outFields=sa2_code_2021,sa2_name_2021"
+    "&outSR=4326"
+    "&geometryPrecision=5"
 )
 
-GITHUB_FALLBACK = "https://raw.githubusercontent.com/tonywr71/GeoJson-Data/master/australia/sa2/sydney_sa2.json"
+GITHUB_FALLBACK = "https://raw.githubusercontent.com/centreborelli/geo-aus/master/ABS/2016/SA2/sa2_2016_sydney_simplified.geojson"
 
-@st.cache_data
+@st.cache_data(ttl=24*3600)
 def load_sa2_geojson(max_features=15):
-    # 1) ABS ArcGIS (Greater Sydney bbox, GeoJSON)
+    # 1) ABS ArcGIS (Greater Sydney)
     try:
-        r = requests.get(ABS_ARCGIS, timeout=15)
+        r = requests.get(ABS_QUERY, timeout=15)
         if r.ok:
             gj = r.json()
-            if "features" in gj and gj["features"]:
-                gj["features"] = gj["features"][:max_features]
+            if isinstance(gj, dict) and gj.get("features"):
+                # упорядочим стабильно (по имени) и возьмём первые N
+                feats = sorted(gj["features"], key=lambda f: f.get("properties",{}).get("sa2_name_2021",""))[:max_features]
+                gj = {"type":"FeatureCollection","features":feats}
                 return gj, "abs"
     except Exception:
         pass
-    # 2) GitHub fallback
+    # 2) GitHub fallback (упрощённые контуры Сиднея)
     try:
         r = requests.get(GITHUB_FALLBACK, timeout=15)
         if r.ok:
             gj = r.json()
-            if "features" in gj and gj["features"]:
-                gj["features"] = gj["features"][:max_features]
+            if isinstance(gj, dict) and gj.get("features"):
+                feats = gj["features"][:max_features]
+                gj = {"type":"FeatureCollection","features":feats}
                 return gj, "github"
     except Exception:
         pass
@@ -138,7 +146,7 @@ last_month = months[-1].strftime("%Y-%m")
 
 # ---------- sidebar ----------
 st.sidebar.title("Настройки")
-segment = st.sidebar.radio("Режим", ["Покупка (buyers)", "Аренда (tenants)"], index=0, horizontal=False)
+segment = st.sidebar.radio("Режим", ["Покупка (buyers)", "Аренда (tenants)"], index=0)
 segment_key = "buyers" if segment.startswith("Покупка") else "tenants"
 metric = st.sidebar.selectbox("Слой карты", ["RTI","PTI","Median Rent","Median Price","Median Income","Payment Cap Gap"], index=0)
 bedrooms = st.sidebar.slider("Спален", 1, 3, 2)
@@ -146,21 +154,21 @@ preset = st.sidebar.selectbox("Период", ["Max","5y","3y","1y"], index=0)
 
 use_real_geo = st.sidebar.checkbox("Реальные SA2 полигоны", True,
                                    help="Если отключить — будет компактная 3×4 сетка.")
-st.sidebar.caption("Если отключить — будет компактная 3×4 сетка.")
 
 sa2_all = grid["SA2_CODE"].tolist()
-# session_state for stable selection
+
+# --- selection state
 if "selected_sa2" not in st.session_state:
     st.session_state.selected_sa2 = sa2_all[:3]
 if "focus_sa2" not in st.session_state:
     st.session_state.focus_sa2 = st.session_state.selected_sa2[0]
 
-selected = st.sidebar.multiselect("Сравнение районов (до 3)", options=sa2_all,
-                                  default=st.session_state.selected_sa2, key="ms_sa2")
-# enforce limit
-selected = list(selected)[:3]
-if selected != st.session_state.selected_sa2:
-    st.session_state.selected_sa2 = selected
+selected_from_ui = st.sidebar.multiselect("Сравнение районов (до 3)", options=sa2_all,
+                                          default=st.session_state.selected_sa2, key="ms_sa2")
+# держим ровно до 3
+selected_from_ui = list(selected_from_ui)[:3]
+if selected_from_ui != st.session_state.selected_sa2:
+    st.session_state.selected_sa2 = selected_from_ui
 if st.session_state.focus_sa2 not in st.session_state.selected_sa2:
     st.session_state.focus_sa2 = st.session_state.selected_sa2[0] if st.session_state.selected_sa2 else sa2_all[0]
 
@@ -215,15 +223,15 @@ def value_for_metric_row(row):
         return float(g.iloc[0]) if not g.empty else np.nan
     return row.RTI
 
-vals = snap.apply(value_for_metric_row, axis=1)
-vmin, vmax = float(np.nanmin(vals)), float(np.nanmax(vals))
+vals_all = snap.apply(value_for_metric_row, axis=1)
+vmin, vmax = float(np.nanmin(vals_all)), float(np.nanmax(vals_all))
 higher_is_bad = metric in ["Median Price","Median Rent","PTI","RTI","Payment Cap Gap"]
 
 # ---------- header ----------
 st.markdown("## 🏠 Дэшборд доступности жилья — Sydney (SA2, synthetic)")
 st.caption(f"Метрика: **{metric}**. Выбрано: {', '.join(st.session_state.selected_sa2)}")
 
-# ---------- map ----------
+# ---------- maps ----------
 def map_grid_fig():
     dfm = snap.merge(grid, on="SA2_CODE")
     dfm["val"] = dfm.apply(value_for_metric_row, axis=1)
@@ -255,18 +263,25 @@ def map_real_fig():
     gj, source = load_sa2_geojson(max_features=15)
     if not gj:
         return None, "no-geo"
-    # Привяжем первые N полигонов к нашим кодам SA2_01..N
-    codes = [f"SA2_{i+1:02d}" for i in range(min(12, len(gj["features"])))]
-    for i, f in enumerate(gj["features"][:len(codes)]):
-        if "properties" not in f: f["properties"] = {}
-        f["properties"]["SA2_CODE"] = codes[i]
-    # значения слоя по метрике
+
+    # Связываем первые N полигонов с нашими SA2_01.. кодами
+    feats = gj["features"]
+    n = min(12, len(feats))
+    codes = [f"SA2_{i+1:02d}" for i in range(n)]
+    for i, f in enumerate(feats[:n]):
+        props = f.setdefault("properties", {})
+        # тех. поле, по которому связываем df и геометрию
+        props["loc_code"] = codes[i]
+
+    # значения метрики
     snap_map = snap.set_index("SA2_CODE")
-    vals = [value_for_metric_row(snap_map.loc[c]) if c in snap_map.index else np.nan for c in codes]
-    df_map = pd.DataFrame({"SA2_CODE": codes, "val": vals})
+    values = [value_for_metric_row(snap_map.loc[c]) if c in snap_map.index else np.nan for c in codes]
+    df_map = pd.DataFrame({"SA2_CODE": codes, "val": values})
+
     fig = px.choropleth(
-        df_map, geojson=gj, locations="SA2_CODE", color="val",
-        featureidkey="properties.SA2_CODE",
+        df_map, geojson={"type":"FeatureCollection","features":feats[:n]},
+        locations="SA2_CODE", color="val",
+        featureidkey="properties.loc_code",
         color_continuous_scale=color_scale_gyr(not higher_is_bad),
         range_color=(vmin, vmax),
         projection="mercator"
@@ -287,29 +302,48 @@ with st.container():
             fig_real, src = map_real_fig()
             if fig_real is None:
                 st.warning("Не удалось загрузить реальные SA2 — показана компактная сетка.")
-                st.plotly_chart(map_grid_fig(), use_container_width=True)
+                fig = map_grid_fig()
+                if HAVE_PLOTLY_EVENTS:
+                    clicks = plotly_events(fig, click_event=True, hover_event=False, select_event=False, key="grid_click")
+                    if clicks:
+                        code = clicks[0].get("text") or clicks[0].get("name")
+                        if isinstance(code, str):
+                            sel = list(st.session_state.selected_sa2)
+                            if code in sel: sel.remove(code)
+                            elif len(sel) < 3: sel.append(code)
+                            st.session_state.selected_sa2 = sel
+                            st.session_state.focus_sa2 = code
+                else:
+                    st.plotly_chart(fig, use_container_width=True)
             else:
                 if HAVE_PLOTLY_EVENTS:
-                    clicks = plotly_events(fig_real, click_event=True, hover_event=False, select_event=False,
-                                          key="map_click")
+                    clicks = plotly_events(fig_real, click_event=True, hover_event=False, select_event=False, key="real_click")
                     if clicks:
-                        code_clicked = clicks[0].get("location")
+                        code_clicked = clicks[0].get("location")  # это наш loc_code = SA2_xx
                         if isinstance(code_clicked, str):
                             sel = list(st.session_state.selected_sa2)
-                            if code_clicked in sel:
-                                sel.remove(code_clicked)
-                            elif len(sel) < 3:
-                                sel.append(code_clicked)
+                            if code_clicked in sel: sel.remove(code_clicked)
+                            elif len(sel) < 3: sel.append(code_clicked)
                             st.session_state.selected_sa2 = sel
                             st.session_state.focus_sa2 = code_clicked
-                            selected = sel
-                    # фигура уже отрисована компонентом
                 else:
                     st.plotly_chart(fig_real, use_container_width=True)
                 src_label = "ABS ArcGIS" if src=="abs" else ("GitHub" if src=="github" else "—")
                 st.caption(f"Источник полигона: {src_label}")
         else:
-            st.plotly_chart(map_grid_fig(), use_container_width=True)
+            fig = map_grid_fig()
+            if HAVE_PLOTLY_EVENTS:
+                clicks = plotly_events(fig, click_event=True, hover_event=False, select_event=False, key="grid_click2")
+                if clicks:
+                    code = clicks[0].get("text") or clicks[0].get("name")
+                    if isinstance(code, str):
+                        sel = list(st.session_state.selected_sa2)
+                        if code in sel: sel.remove(code)
+                        elif len(sel) < 3: sel.append(code)
+                        st.session_state.selected_sa2 = sel
+                        st.session_state.focus_sa2 = code
+            else:
+                st.plotly_chart(fig, use_container_width=True)
 
 # ---------- comparison table ----------
 st.subheader("📊 Сравнение выбранных SA2")
@@ -320,7 +354,7 @@ tbl = (snap[snap.SA2_CODE.isin(sel_now)]
        .rename(columns={
            "SA2_CODE":"SA2",
            "MedianPrice_adj":"Median Price",
-           "MedianRent_week_adj":f"Median Rent ({bedrooms}BR, /нед)",
+           f"MedianRent_week_adj":f"Median Rent ({bedrooms}BR, /нед)",
            "MedianIncome_annual":"Income (/год)",
            "gap":"Payment Cap Gap"
        }))
@@ -408,12 +442,10 @@ def ts_with_median(series_key: str):
 def ts_fig(title, key, thresholds=None):
     data = ts_with_median(key)
     fig = go.Figure()
-    # thresholds
     if thresholds:
         for (y1,y2,color) in thresholds:
             fig.add_shape(type="rect", xref="paper", x0=0, x1=1, y0=y1, y1=y2,
                           fillcolor=color, opacity=0.12, layer="below", line_width=0)
-    # series
     for col in data.columns:
         if col in ("date","median"): continue
         fig.add_trace(go.Scatter(x=data["date"], y=data[col], name=col, mode="lines", line=dict(width=1.5)))
@@ -446,3 +478,4 @@ else:
 
 st.caption("Данные синтетические. Цвета: зелёный лучше/дешевле, красный хуже/дороже. "
            "Полигональный слой загружается из ABS ArcGIS; при недоступности включается запасной источник или сетка.")
+
