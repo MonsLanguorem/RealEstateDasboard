@@ -9,7 +9,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 
-# --- клики по карте (опционально) ---
+# --- map clicks (optional) ---
 try:
     from streamlit_plotly_events import plotly_events
     HAVE_PLOTLY_EVENTS = True
@@ -91,7 +91,7 @@ def load_synthetic():
             rows.append(dict(date=dt.strftime("%Y-%m"), SA2_CODE=code,
                              MedianPrice=P, MedianRent_week=Rw, MedianIncome_annual=I))
     df = pd.DataFrame(rows)
-    # сетка 3x4
+    # 3x4 grid positions
     grid = pd.DataFrame({
         "SA2_CODE": sa2,
         "row": [0,0,0,0, 1,1,1,1, 2,2,2,2],
@@ -100,8 +100,7 @@ def load_synthetic():
     return df, grid, months
 
 # ---------- real SA2 polygons (auto-load) ----------
-# Официальный сервис ABS ASGS 2021 → SA2 (FeatureServer):
-# https://geo.abs.gov.au/arcgis/rest/services/ASGS2021/SA2/FeatureServer/0  (поддерживает f=geojson + нужные поля)  [ABS doc] :contentReference[oaicite:1]{index=1}
+# ABS ASGS 2021 → SA2 (FeatureServer), returns GeoJSON with the needed fields.
 ABS_QUERY = (
     "https://geo.abs.gov.au/arcgis/rest/services/ASGS2021/SA2/FeatureServer/0/query"
     "?f=geojson"
@@ -121,13 +120,12 @@ def load_sa2_geojson(max_features=15):
         if r.ok:
             gj = r.json()
             if isinstance(gj, dict) and gj.get("features"):
-                # упорядочим стабильно (по имени) и возьмём первые N
                 feats = sorted(gj["features"], key=lambda f: f.get("properties",{}).get("sa2_name_2021",""))[:max_features]
                 gj = {"type":"FeatureCollection","features":feats}
                 return gj, "abs"
     except Exception:
         pass
-    # 2) GitHub fallback (упрощённые контуры Сиднея)
+    # 2) GitHub fallback (simplified Sydney contours)
     try:
         r = requests.get(GITHUB_FALLBACK, timeout=15)
         if r.ok:
@@ -145,15 +143,15 @@ df, grid, months = load_synthetic()
 last_month = months[-1].strftime("%Y-%m")
 
 # ---------- sidebar ----------
-st.sidebar.title("Настройки")
-segment = st.sidebar.radio("Режим", ["Покупка (buyers)", "Аренда (tenants)"], index=0)
-segment_key = "buyers" if segment.startswith("Покупка") else "tenants"
-metric = st.sidebar.selectbox("Слой карты", ["RTI","PTI","Median Rent","Median Price","Median Income","Payment Cap Gap"], index=0)
-bedrooms = st.sidebar.slider("Спален", 1, 3, 2)
-preset = st.sidebar.selectbox("Период", ["Max","5y","3y","1y"], index=0)
+st.sidebar.title("Settings")
+segment = st.sidebar.radio("Mode", ["Buyers", "Tenants"], index=0)
+segment_key = "buyers" if segment.startswith("Buyers") else "tenants"
+metric = st.sidebar.selectbox("Map layer", ["RTI","PTI","Median Rent","Median Price","Median Income","Payment Cap Gap"], index=0)
+bedrooms = st.sidebar.slider("Bedrooms", 1, 3, 2)
+preset = st.sidebar.selectbox("Period", ["Max","5y","3y","1y"], index=0)
 
-use_real_geo = st.sidebar.checkbox("Реальные SA2 полигоны", True,
-                                   help="Если отключить — будет компактная 3×4 сетка.")
+use_real_geo = st.sidebar.checkbox("Real SA2 polygons", True,
+                                   help="If off — shows a compact 3×4 grid.")
 
 sa2_all = grid["SA2_CODE"].tolist()
 
@@ -163,9 +161,9 @@ if "selected_sa2" not in st.session_state:
 if "focus_sa2" not in st.session_state:
     st.session_state.focus_sa2 = st.session_state.selected_sa2[0]
 
-selected_from_ui = st.sidebar.multiselect("Сравнение районов (до 3)", options=sa2_all,
+selected_from_ui = st.sidebar.multiselect("Compare SA2 (up to 3)", options=sa2_all,
                                           default=st.session_state.selected_sa2, key="ms_sa2")
-# держим ровно до 3
+# keep up to 3
 selected_from_ui = list(selected_from_ui)[:3]
 if selected_from_ui != st.session_state.selected_sa2:
     st.session_state.selected_sa2 = selected_from_ui
@@ -173,13 +171,13 @@ if st.session_state.focus_sa2 not in st.session_state.selected_sa2:
     st.session_state.focus_sa2 = st.session_state.selected_sa2[0] if st.session_state.selected_sa2 else sa2_all[0]
 
 st.sidebar.divider()
-st.sidebar.markdown("**Покупка — финансы**")
-income_user   = st.sidebar.number_input("Доход /год (A$)", value=95000, min_value=0, step=1000)
-savings       = st.sidebar.number_input("Накопления (A$)", value=40000, min_value=0, step=1000)
+st.sidebar.markdown("**Buying — finances**")
+income_user   = st.sidebar.number_input("Income /yr (A$)", value=95000, min_value=0, step=1000)
+savings       = st.sidebar.number_input("Savings (A$)", value=40000, min_value=0, step=1000)
 deposit_pct   = st.sidebar.slider("Deposit (%)", 5, 30, 20)
-interest      = st.sidebar.slider("Ставка ипотеки (% год.)", 2.0, 10.0, 6.0, step=0.1)
-mortgage_years= st.sidebar.slider("Срок ипотеки (лет)", 1, 30, 25)
-max_monthly   = st.sidebar.number_input("Макс. платёж /мес (A$)", value=2500, min_value=0, step=50)
+interest      = st.sidebar.slider("Mortgage rate (%/yr)", 2.0, 10.0, 6.0, step=0.1)
+mortgage_years= st.sidebar.slider("Mortgage term (years)", 1, 30, 25)
+max_monthly   = st.sidebar.number_input("Max monthly payment (A$)", value=2500, min_value=0, step=50)
 
 # ---------- filtering ----------
 end_idx = len(months)-1
@@ -207,7 +205,7 @@ loan_principal = max(0.0, price_adj - deposit_target)
 monthly_payment = annuity_monthly(loan_principal, interest/100.0, mortgage_years)
 mti = (monthly_payment*12) / max(1e-9, income)
 
-# Cap-gap baseline (фикс 25y)
+# Cap-gap baseline (fixed 25y)
 LcapMap = principal_from_monthly(max_monthly, interest/100.0, 25)
 cap_gap = (snap.assign(L_needed=lambda x: x.MedianPrice_adj*(1-deposit_pct/100.0))
                 .assign(gap=lambda x: (x.L_needed - LcapMap)/x.MedianPrice_adj)
@@ -228,8 +226,8 @@ vmin, vmax = float(np.nanmin(vals_all)), float(np.nanmax(vals_all))
 higher_is_bad = metric in ["Median Price","Median Rent","PTI","RTI","Payment Cap Gap"]
 
 # ---------- header ----------
-st.markdown("## 🏠 Дэшборд доступности жилья — Sydney (SA2, synthetic)")
-st.caption(f"Метрика: **{metric}**. Выбрано: {', '.join(st.session_state.selected_sa2)}")
+st.markdown("## 🏠 Housing affordability dashboard — Sydney (SA2, synthetic)")
+st.caption(f"Metric: **{metric}**. Selected: {', '.join(st.session_state.selected_sa2)}")
 
 # ---------- maps ----------
 def map_grid_fig():
@@ -264,16 +262,15 @@ def map_real_fig():
     if not gj:
         return None, "no-geo"
 
-    # Связываем первые N полигонов с нашими SA2_01.. кодами
+    # Tie first N polygons to our SA2_01.. codes
     feats = gj["features"]
     n = min(12, len(feats))
     codes = [f"SA2_{i+1:02d}" for i in range(n)]
     for i, f in enumerate(feats[:n]):
         props = f.setdefault("properties", {})
-        # тех. поле, по которому связываем df и геометрию
         props["loc_code"] = codes[i]
 
-    # значения метрики
+    # metric values
     snap_map = snap.set_index("SA2_CODE")
     values = [value_for_metric_row(snap_map.loc[c]) if c in snap_map.index else np.nan for c in codes]
     df_map = pd.DataFrame({"SA2_CODE": codes, "val": values})
@@ -296,12 +293,12 @@ def map_real_fig():
 with st.container():
     c1, c2 = st.columns([1,2.2])
     with c1:
-        st.subheader("Карта: слой")
+        st.subheader("Map: layer")
     with c2:
         if use_real_geo:
             fig_real, src = map_real_fig()
             if fig_real is None:
-                st.warning("Не удалось загрузить реальные SA2 — показана компактная сетка.")
+                st.warning("Failed to load real SA2 — showing compact grid.")
                 fig = map_grid_fig()
                 if HAVE_PLOTLY_EVENTS:
                     clicks = plotly_events(fig, click_event=True, hover_event=False, select_event=False, key="grid_click")
@@ -319,7 +316,7 @@ with st.container():
                 if HAVE_PLOTLY_EVENTS:
                     clicks = plotly_events(fig_real, click_event=True, hover_event=False, select_event=False, key="real_click")
                     if clicks:
-                        code_clicked = clicks[0].get("location")  # это наш loc_code = SA2_xx
+                        code_clicked = clicks[0].get("location")  # our loc_code = SA2_xx
                         if isinstance(code_clicked, str):
                             sel = list(st.session_state.selected_sa2)
                             if code_clicked in sel: sel.remove(code_clicked)
@@ -329,7 +326,7 @@ with st.container():
                 else:
                     st.plotly_chart(fig_real, use_container_width=True)
                 src_label = "ABS ArcGIS" if src=="abs" else ("GitHub" if src=="github" else "—")
-                st.caption(f"Источник полигона: {src_label}")
+                st.caption(f"Polygon source: {src_label}")
         else:
             fig = map_grid_fig()
             if HAVE_PLOTLY_EVENTS:
@@ -346,7 +343,7 @@ with st.container():
                 st.plotly_chart(fig, use_container_width=True)
 
 # ---------- comparison table ----------
-st.subheader("📊 Сравнение выбранных SA2")
+st.subheader("📊 Selected SA2 comparison")
 sel_now = st.session_state.selected_sa2
 tbl = (snap[snap.SA2_CODE.isin(sel_now)]
        .merge(cap_gap, on="SA2_CODE", how="left")
@@ -354,14 +351,14 @@ tbl = (snap[snap.SA2_CODE.isin(sel_now)]
        .rename(columns={
            "SA2_CODE":"SA2",
            "MedianPrice_adj":"Median Price",
-           f"MedianRent_week_adj":f"Median Rent ({bedrooms}BR, /нед)",
-           "MedianIncome_annual":"Income (/год)",
+           f"MedianRent_week_adj":f"Median Rent ({bedrooms}BR, /wk)",
+           "MedianIncome_annual":"Income (/yr)",
            "gap":"Payment Cap Gap"
        }))
 tbl_display = tbl.copy()
 tbl_display["Median Price"] = tbl_display["Median Price"].map(money)
-tbl_display[f"Median Rent ({bedrooms}BR, /нед)"] = tbl_display[f"Median Rent ({bedrooms}BR, /нед)"].map(money)
-tbl_display["Income (/год)"] = tbl_display["Income (/год)"].map(money)
+tbl_display[f"Median Rent ({bedrooms}BR, /wk)"] = tbl_display[f"Median Rent ({bedrooms}BR, /wk)"].map(money)
+tbl_display["Income (/yr)"] = tbl_display["Income (/yr)"].map(money)
 tbl_display["PTI"] = tbl_display["PTI"].map(lambda x: f"{x:.1f}")
 tbl_display["RTI"] = tbl_display["RTI"].map(lambda x: f"{x*100:.1f}%")
 tbl_display["Payment Cap Gap"] = tbl_display["Payment Cap Gap"].map(
@@ -370,9 +367,9 @@ tbl_display["Payment Cap Gap"] = tbl_display["Payment Cap Gap"].map(
 st.dataframe(tbl_display, use_container_width=True, hide_index=True)
 
 # ---------- buyer / tenant panels ----------
-st.subheader("🔧 Параметры и расчёты")
+st.subheader("🔧 Parameters & calculations")
 if segment_key == "buyers":
-    buyer_mode = st.radio("Режим покупателя", ["По бюджету","25 лет → MTI","Срок → доход"], horizontal=True)
+    buyer_mode = st.radio("Buyer mode", ["Budget","25y → MTI","Term → income"], horizontal=True)
     monthly25 = annuity_monthly(loan_principal, interest/100.0, 25)
     mti25 = (monthly25*12)/max(1e-9,income)
     LcapUser = principal_from_monthly(max_monthly, interest/100.0, mortgage_years)
@@ -380,42 +377,42 @@ if segment_key == "buyers":
     income_required_fixedSR = (monthly_payment*12)/0.25
 
     cA, cB, cC = st.columns(3)
-    cA.metric("Цена (учтён размер)", money(price_adj))
-    cB.metric("Минимальный депозит", money(deposit_target))
-    cC.metric("Ваш доход /год", money(income))
+    cA.metric("Price (size-adjusted)", money(price_adj))
+    cB.metric("Minimum deposit", money(deposit_target))
+    cC.metric("Your income /yr", money(income))
 
-    if buyer_mode == "По бюджету":
+    if buyer_mode == "Budget":
         c1, c2, c3 = st.columns(3)
-        c1.metric("Доступная цена", money(P_affordable), help="Из вашего месячного лимита и текущей ставки/срока")
-        c2.metric("Платёж (/мес)", money(monthly_payment))
-        c3.metric("MTI (доля дохода)", f"{mti*100:.1f}%")
-    elif buyer_mode == "25 лет → MTI":
+        c1.metric("Affordable price", money(P_affordable), help="From your monthly limit and current rate/term")
+        c2.metric("Payment (/mo)", money(monthly_payment))
+        c3.metric("MTI (income share)", f"{mti*100:.1f}%")
+    elif buyer_mode == "25y → MTI":
         c1, c2, c3 = st.columns(3)
-        c1.metric("Платёж 25 лет", money(monthly25)+"/мес")
-        c2.metric("MTI (25 лет)", f"{mti25*100:.1f}%")
-        c3.metric("Цена", money(price_adj))
+        c1.metric("Payment at 25y", money(monthly25)+"/mo")
+        c2.metric("MTI (25y)", f"{mti25*100:.1f}%")
+        c3.metric("Price", money(price_adj))
     else:
         c1, c2, c3 = st.columns(3)
-        c1.metric("Нужный доход при MTI=25%", money(income_required_fixedSR))
-        c2.metric("Платёж (/мес)", money(monthly_payment))
-        c3.metric("Цена", money(price_adj))
+        c1.metric("Income needed at MTI=25%", money(income_required_fixedSR))
+        c2.metric("Payment (/mo)", money(monthly_payment))
+        c3.metric("Price", money(price_adj))
 
     if mti >= 0.40:
-        st.warning("MTI ≥ 40% — высокая ипотечная нагрузка.")
+        st.warning("MTI ≥ 40% — high mortgage burden.")
     elif mti >= 0.30:
-        st.warning("MTI 30–40% — повышенная нагрузка.")
+        st.warning("MTI 30–40% — elevated burden.")
 else:
     rent_week = float(focus_row.MedianRent_week*brR)
     rent_month = rent_week*52/12
     rti_user = (rent_week*52)/max(1e-9, income)
     cA, cB, cC = st.columns(3)
-    cA.metric(f"Аренда {bedrooms}BR (нед.)", money(rent_week))
-    cB.metric("Аренда (мес.)", money(rent_month))
+    cA.metric(f"Rent {bedrooms}BR (/wk)", money(rent_week))
+    cB.metric("Rent (/mo)", money(rent_month))
     cC.metric("RTI", f"{rti_user*100:.1f}%")
     if rti_user >= 0.30:
-        st.warning("RTI ≥ 30% — арендный стресс.")
+        st.warning("RTI ≥ 30% — rental stress.")
     elif rti_user >= 0.25:
-        st.info("RTI 25–30% — пограничная нагрузка.")
+        st.info("RTI 25–30% — borderline burden.")
 
 # ---------- time series ----------
 def ts_with_median(series_key: str):
@@ -454,17 +451,17 @@ def ts_fig(title, key, thresholds=None):
     fig.update_layout(title=title, height=340, margin=dict(l=10,r=10,t=40,b=10))
     return fig
 
-st.subheader("📈 Динамика")
+st.subheader("📈 Trends")
 if segment_key == "tenants":
     c1, c2 = st.columns(2)
-    c1.plotly_chart(ts_fig(f"Median Rent ({bedrooms}BR, месяц)", "RentMonthly"),
+    c1.plotly_chart(ts_fig(f"Median Rent ({bedrooms}BR, month)", "RentMonthly"),
                     use_container_width=True)
     c2.plotly_chart(ts_fig("RTI", "RTI",
                            thresholds=[(0,0.25,"green"),(0.25,0.30,"gold"),(0.30,1.0,"crimson")]),
                     use_container_width=True)
 else:
     c1, c2 = st.columns(2)
-    c1.plotly_chart(ts_fig(f"Median Rent ({bedrooms}BR, неделя)", "Rent"),
+    c1.plotly_chart(ts_fig(f"Median Rent ({bedrooms}BR, week)", "Rent"),
                     use_container_width=True)
     c2.plotly_chart(ts_fig("Median Price", "Price"),
                     use_container_width=True)
@@ -476,6 +473,6 @@ else:
                            thresholds=[(0,0.25,"green"),(0.25,0.30,"gold"),(0.30,1.0,"crimson")]),
                     use_container_width=True)
 
-st.caption("Данные синтетические. Цвета: зелёный лучше/дешевле, красный хуже/дороже. "
-           "Полигональный слой загружается из ABS ArcGIS; при недоступности включается запасной источник или сетка.")
+st.caption("Synthetic data. Colors: green is better/cheaper, red is worse/more expensive. "
+           "Polygon layer loads from ABS ArcGIS; when unavailable it falls back to a backup source or the grid.")
 
